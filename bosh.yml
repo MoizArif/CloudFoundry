@@ -1,0 +1,149 @@
+---
+name: bosh
+releases:
+- name: bosh
+  url: https://bosh.io/d/github.com/cloudfoundry/bosh?v=257.3
+  sha1: e4442afcc64123e11f2b33cc2be799a0b59207d0
+- name: bosh-openstack-cpi
+  url: https://bosh.io/d/github.com/cloudfoundry-incubator/bosh-openstack-cpi-release?v=25
+  sha1: 8ad0182d9cb6638bc216d7fa77d521390971e2a5
+
+resource_pools:
+- name: vms
+  network: test
+  stemcell:
+    url: https://bosh.io/d/stemcells/bosh-openstack-kvm-ubuntu-trusty-go_agent?v=3262.2
+#    url: https://bosh.io/d/stemcells/bosh-openstack-kvm-ubuntu-trusty-go_agent?v=3262.4
+#    sha1: ce7b85b094342ad22f119bb8f0352a8264455a21
+    sha1: d4602058781befadf0ec4f2556aa670e76135546
+  cloud_properties:
+    instance_type: bosh
+
+disk_pools:
+- name: disks
+  disk_size: 100_00
+
+networks:
+- name: test
+  type: manual
+  subnets:
+  - range: 1.1.1.0/24
+    gateway: 1.1.1.1
+    dns:
+    - 8.8.8.8
+    cloud_properties:
+      net_id: 183320be-c527-4bb4-b677-b8be7fe267e8
+
+- name: External
+  type: vip
+
+jobs:
+- name: bosh
+  instances: 1
+
+  templates:
+  - {name: nats, release: bosh}
+  - {name: postgres, release: bosh}
+  - {name: blobstore, release: bosh}
+  - {name: director, release: bosh}
+  - {name: health_monitor, release: bosh}
+  - {name: registry, release: bosh}
+  - {name: openstack_cpi, release: bosh-openstack-cpi}
+
+  resource_pool: vms
+  persistent_disk_pool: disks
+
+  networks:
+  - name: test
+    static_ips: 
+    - 1.1.1.200
+    default: [dns, gateway]
+  - name: External
+    static_ips: 
+    - 192.168.14.91
+
+  properties:
+    nats:
+      address: 127.0.0.1
+      user: nats
+      password: plumgrid
+
+    postgres: &db
+      listen_address: 127.0.0.1
+      host: 127.0.0.1
+      user: postgres
+      password: plumgrid
+      database: bosh
+      adapter: postgres
+
+    registry:
+      address: 1.1.1.200
+      host: 1.1.1.200
+      db: *db
+      http: {user: admin, password: plumgrid, port: 25777}
+      username: admin
+      password: plumgrid
+      port: 25777
+      endpoint: http://admin:plumgrid@1.1.1.200:25777
+
+    blobstore:
+      address: 1.1.1.200
+      port: 25250
+      provider: dav
+      director: {user: director, password: plumgrid}
+      agent: {user: agent, password: plumgrid}
+
+    director:
+      address: 127.0.0.1
+      name: my-bosh
+      db: *db
+      cpi_job: openstack_cpi
+      max_threads: 3
+      user_management:
+        provider: local
+        local:
+          users:
+          - {name: admin, password: plumgrid}
+          - {name: hm, password: plumgrid}
+
+    hm:
+      director_account: {user: hm, password: plumgrid}
+      resurrector_enabled: true
+
+    openstack: &openstack
+      auth_url: https://public.fuel.local:5000/v2.0
+      tenant: admin 
+      username: admin
+      api_key: plumgrid
+      region: RegionOne
+      default_key_name: bosh
+      human_readable_vm_names: true
+      default_security_groups: [bosh]
+#      default_security_groups: [default]
+      connection_options:
+        connect_timeout: 3600
+        ssl_verify_peer: false
+
+    agent: {mbus: "nats://nats:plumgrid@1.1.1.200:4222"} 
+    ntp: &ntp [0.pool.ntp.org, 1.pool.ntp.org]
+
+cloud_provider:
+  template: {name: openstack_cpi, release: bosh-openstack-cpi}
+
+  ssh_tunnel:
+    host: 192.168.14.91
+    port: 22
+    user: vcap
+    private_key: /root/my-bosh/id_rsa.pem
+
+  mbus: "https://mbus:plumgrid@192.168.14.91:6868" 
+
+  properties:
+    openstack: *openstack
+    agent: {mbus: "https://mbus:plumgrid@0.0.0.0:6868"}
+    blobstore: {provider: local, path: /var/vcap/micro_bosh/data/cache}
+    ntp: *ntp
+
+logging:
+    level: debug
+
